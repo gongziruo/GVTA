@@ -1,0 +1,32 @@
+import numpy as np
+import os
+#load data
+pathtrain='./datatrain2000000_2_500.npz'
+traindataset = np.load(pathtrain)
+traindata = traindataset['data']
+# pathtest='./datatest10000_2_500.npz'
+# testdataset = np.load(pathtest)
+# testdata = testdataset['data']
+N,T=np.shape(traindata)
+print("traindata",traindata[:,:200])
+#resetdata
+
+#init
+train_reset=np.zeros([N,2*(T)])
+test_reset=np.zeros([N,2*(T)])
+p=1#时延
+lag_mat=np.ones(p+1).reshape(1,-1)
+for i in range(T):
+    if i==0:
+        train_reset[:, 0] = 0.01 * np.random.randn(1)+70#0.01 * np.random.randn(1)+ 0.05
+        train_reset[:, 1] = traindata[:, i]
+        train_reset[:, 2] = traindata[:, i]
+    elif 0<i<T-1:
+        train_reset[:, (2 * i + 1) : (2 * i + 3)] = np.dot(traindata[:, i].reshape(-1, 1),lag_mat)
+    else:
+        print(traindata[:, i])
+        train_reset[:, 2 * i + 1] = traindata[:, i]
+
+print('data',train_reset[:,:100])
+filepath='datatrain4000000_2_500.npz'
+np.savez(os.path.abspath(filepath),data=train_reset)

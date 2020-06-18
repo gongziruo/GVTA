@@ -1,0 +1,236 @@
+import numpy as np
+import math
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.pyplot import MultipleLocator
+import torch
+from gssm import *
+from my_puregp import GP
+import logging
+LOGGER = logging.getLogger(__name__)
+from lightningutils import *
+from torch.utils.data import Dataset, DataLoader
+class MazeDataset(Dataset):
+    def __init__(self, length, partition, path):
+        self.partition = partition
+
+        if self.partition == 'train':
+            dataset = np.load(path)
+            #print(np.shape(dataset['data']))
+            self.state = dataset['data'].transpose(1, 0).reshape(-1,20,1,2,2)
+        else:
+            dataset = np.load(path)
+            self.state = dataset['data'].transpose(1, 0).reshape(-1,20,1,2,2)
+
+        self.length = length#12
+        self.full_length = self.state.shape[1]#100
+
+    def __len__(self):
+        return self.state.shape[0]#10
+
+    def __getitem__(self, index):
+        state=self.state[index, 0:self.length].astype(np.float32)
+        return state
+
+def full_dataloader(seq_size, init_size, test_size=1):#box2_1000x10x32x32x3.npz
+    gp_loader=MazeDataset(length=seq_size + init_size * 2, partition='gp', path='./datatrain200000_2_500.npz')
+    test_loader = MazeDataset(length=seq_size + init_size * 2, partition='test', path='./datatrain400000_2_500.npz')
+    mask_loader = MazeDataset(length=seq_size + init_size * 2, partition='mask', path='./mask_list_500-100000.npz')
+    gp_loader = DataLoader(dataset=gp_loader, batch_size=test_size, shuffle=False)
+    test_loader = DataLoader(dataset=test_loader, batch_size=test_size, shuffle=False)
+    mask_loader = DataLoader(dataset=mask_loader, batch_size=test_size, shuffle=False)
+
+    return gp_loader,test_loader,mask_loader
+if __name__ == '__main__':
+    # #data
+    seq_size = 20
+    init_size = 0
+    obs_std = 1.0
+    gp_loader,test_loader ,mask_loder= full_dataloader(seq_size, init_size)
+    LOGGER.info('Dataset loaded')
+    # test data
+    device = torch.device('cuda', 3)
+    pre_test_full_data_list = iter(test_loader).next()
+    pre_test_full_data_list = pre_test_full_data_list.to(device)
+
+    gp_data_list=iter(gp_loader).next()
+    gp_data_list=gp_data_list.to(device)
+
+    mask_target_list=iter(mask_loder).next()
+    mask_target_list=mask_target_list.to(device)
+
+    # fix seed
+    np.random.seed(111)
+    torch.manual_seed(111)
+    torch.cuda.manual_seed_all(111)
+    torch.backends.cudnn.deterministic = True
+    model2 = lightningEnvModel(belief_size=16,
+                              state_size=4,
+                              num_layers=1,
+                              max_seg_len=5,
+                              max_seg_num=4).to(device)
+    model2.load_state_dict(torch.load('./model-5000u.pt'))
+    #init
+    testloss = []
+    test_mask = []
+    test_F_measure = []
+    test_Accuracy = []
+    test_x = []
+    boundary_data_all=[]
+    posterior_covariance_all=[]
+    j = 0  # index
+    max_iters=5000
+    T_full=100
+    posterior_mean_all=[]
+    # 指标
+    # path = './mask_list.npz'
+    # dataset = np.load(path)
+    # mask_target = dataset['data']
+    # print("mask_target",mask_target.shape)
+    # mask_target=mask_target[:10].reshape(1, 10, 1)
+    # print("mask_target", mask_target.shape)
+    # for each iter
+    b_idx = 0
+    while b_idx <max_iters:
+        Data = gp_data_list.reshape(-1, 2)  # 1,10,2,2
+
+        # path='./datatest20000_2_5_tri.npz'
+        # dataset = np.load(path)
+        # Data= dataset['data'][:,:40]
+        p = 1
+        print("Data", Data.shape)
+        time_series = Data
+        T, N = np.shape(time_series)  # number of dimension of the data vector
+        train_t = np.array([i for i in range(p, T)]).T
+        train_t = train_t.reshape(T - 1, 1)
+
+        # T_train
+        T_train = len(train_t)  # the number of time point for training data
+
+        # train_x(9*3)
+        train_x = time_series.cpu().detach().numpy()[train_t, :]  #
+        train_x = train_x.reshape(-1, 2)
+        tmp = np.ones([np.shape(train_x)[0], 1])
+        print("train_x", train_x.shape)
+        print("tmp", tmp.shape)
+        train_x = np.hstack((train_x, tmp))
+        train_x = train_x.reshape(-1, 3)
+
+        # train_yv(18*1)
+        train_y = time_series.cpu().detach().numpy()[train_t, :].reshape(-1, 2)
+        train_yv = train_y.reshape(np.shape(train_y)[0] * np.shape(train_y)[1], 1)  # reshape it to a column vector
+
+        # DX_train
+        DX_train = np.zeros([N * T_train, N * (N * p + 1) * T_train])
+
+        for i in range(N * T_train):
+            DX_train[i][i * (N * p + 1):(i + 1) * (N * p + 1)] = train_x[math.ceil((i - 3) / N)][:]
+
+        obj = GP(0.1, 1.1, 1.1)
+
+        parm = {"mean": obj.mean, "lik": obj.lik, "cov": obj.cov}
+
+        parm2, fhyp2 = obj.minimize(parm, 100, T, N, p, 0, train_t, train_yv, DX_train, train_x)
+        print("parm2, fhyp2", parm2, fhyp2)
+        nlZ, dnlZ, nlhood, posterior_mean, posterior_covariance = obj.infExact_delayed(parm2, T, N, p, 1, train_t,
+                                                                                       train_yv, DX_train, train_x)
+        posterior_mean_all.append(posterior_mean)
+        posterior_covariance_all.append(posterior_covariance)
+        print("posterior_mean, posterior_covariance", posterior_mean.shape, posterior_covariance.shape)
+        with torch.no_grad():
+            print("---------------------------------zheshixian----------------------------------------")
+            ##################
+            # test data elbo #
+            ##################
+            model2.eval()
+            results = model2(pre_test_full_data_list, seq_size, init_size, obs_std)
+
+            post_abs_state_list = results['post_abs_state_list']
+            # log
+            log_str, log_data, log_loss, mask_data = log_test(results, b_idx )
+            LOGGER.info(log_str, *log_data)
+            testloss.append(log_loss.cpu().detach().numpy())
+            test_mask.append(mask_data.cpu().detach().numpy())
+            test_x.append(j)
+            j += 1
+            # 指标
+            boundary_data_list = results['mask_data']
+            boundary_data_list = boundary_data_list.cpu().detach().numpy()
+            boundary_data_all.append(boundary_data_list)
+            sum_mask = boundary_data_list + mask_target
+            sum_mask = sum_mask.reshape(-1)
+            Positive = [1 if n == 2 else 0 for n in sum_mask]
+            Negetive = [1 if n == 0 else 0 for n in sum_mask]
+            TP = sum(Positive)
+            TN = sum(Negetive)
+            boundary_data_list = boundary_data_list.reshape(-1)
+            P = sum(boundary_data_list)
+            Precision = TP / P
+            Recall = TP / 2
+            test_Accuracy.append((TP + TN) / 10)
+            if ((Recall + Precision) == 0):
+                print(Recall, Precision)
+                # test_F_measure.append(0)
+                exit()
+            else:
+                test_F_measure.append(Recall * Precision * 2 / (Recall + Precision))
+        b_idx+=1
+
+    plt.figure("loss")
+    plt.plot(test_x, testloss, color='blue', linewidth=3.0, linestyle='-.')
+    plt.savefig("test-loss-learn_reat00001-F-5000s-02")
+    plt.figure("F_measure")
+    plt.plot(test_x, test_F_measure, color='blue', linewidth=3.0, linestyle='-.')
+    plt.savefig("test-F_measure-learn_reat00001-F-5000s-02")
+    plt.figure("Accuracy")
+    plt.plot(test_x, test_Accuracy, color='blue', linewidth=3.0, linestyle='-.')
+    plt.savefig("test-Accuracy-learn_reat00001-F-5000s-02")
+    plt.figure("mask")
+    plt.plot(test_x, test_mask, color='blue', linewidth=3.0, linestyle='-.')
+    plt.savefig("test-mask-learn_reat00001-F-5000s-02")
+
+    #plt
+    print(boundary_data_all)
+    number_of_func = N * (N * p + 1)  # 6
+    posterior_mean_sigle = np.array(posterior_mean_all).reshape(max_iters,number_of_func ,seq_size*2-1)#10,6,19
+    #posterior_variance = np.diag(posterior_covariance_all)
+   # p_variance = posterior_variance.reshape(N * (N * p + 1), int(len(posterior_variance) / (N * (N * p + 1))))
+    # train_t_full = np.array([i for i in range(p, T_full)]).T
+    # train_t_full = train_t_full.reshape(max_iters,number_of_func ,seq_size*2-1)
+    z = train_t.T
+
+
+    for j in range(10):
+        plt.figure("line%d"%j)
+        posterior_mean_plt=posterior_mean_sigle[j,:,:].reshape(number_of_func,seq_size*2-1)
+        for i in range(number_of_func):
+            plt.subplot(N, N * p + 1, i+1)
+            if i<N:
+                print("p_meani",posterior_mean_plt[i,:].shape,posterior_mean_plt[i,:])
+                plt.plot(z[0], posterior_mean_plt[i, :], '-')
+                x_major_locator = MultipleLocator(1)
+                plt.xlim([1, seq_size*2-1])
+                plt.xlabel("time")
+                plt.title("a1%d" % (i+1))
+            elif i==N:
+                plt.plot(z[0], posterior_mean_plt[i, :], '-')
+                x_major_locator = MultipleLocator(1)
+                plt.xlim([1,seq_size*2-1])
+                plt.xlabel("time")
+                plt.title('g1')
+            elif i<2*N+1:
+                plt.plot(z[0], posterior_mean_plt[i, :], '-')
+                plt.xlim([1,seq_size*2-1])
+                x_major_locator = MultipleLocator(1)
+                plt.xlabel("time")
+                plt.title("a2%d" % (i-2))
+            else :
+                plt.plot(z[0], posterior_mean_plt[i, :], '-')
+                plt.xlim([1,seq_size*2-1])
+                plt.xlabel("time")
+                x_major_locator = MultipleLocator(1)
+                plt.title('g2')
+        plt.savefig("time_varying_coefficients:%d"%j)
+        plt.figure("heatmap%d"%j)
+        sns.heatmap(posterior_mean_plt, annot=True)
+        plt.savefig("time_varying_coefficients-heatmap%d"%j)

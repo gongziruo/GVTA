@@ -1,0 +1,46 @@
+import numpy as np
+import os
+import random
+# data
+#data
+T = 2000000 #number of time points
+num=int(T/500)
+path='./datarely1000000_2_500.npz'
+dataset = np.load(path)
+rely = dataset['data']
+print('rely',rely.T[:500,:])
+path='./datainden1000000_2_500.npz'
+dataset = np.load(path)
+inden = dataset['data']
+print('inden',inden.T[:500,:])
+
+x = np.zeros(T)
+y= np.zeros(T)
+index=0
+param=0
+above=0
+i=0
+for  t in range(0,num):#from 1 to T-1
+    if i==0:
+
+        x[above*500:(above+1)*500] = inden[0,index*500:(index+1)*500]
+        y[above*500:(above+1)*500] = inden[1,index*500:(index+1)*500]
+        #print(i,x[t])
+        index+=1
+        above+=1
+        i = 1
+        continue
+    if i==1:
+
+        x[above*500:(above+1)*500] = rely[0, param*500:(param + 1) * 500]
+        y[above*500:(above+1)*500] = rely[1, param*500:(param + 1) * 500]
+        #print(i,x[t])
+        param+=1
+        above+=1
+        i = 0
+
+Data = np.array((x.T,y.T))
+print("data",Data.T[:500,:])
+print("datarely",Data.T[500:1000,:])
+filepath='datatrain2000000_2_500.npz'
+np.savez(os.path.abspath(filepath),data=Data)

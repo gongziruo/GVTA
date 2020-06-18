@@ -1,0 +1,133 @@
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader
+
+
+def highlite_boundary(input_data):
+    input_data[0, :, 0] = 1.0
+    input_data[0, :, 1] = 0.0
+    input_data[0, :, 2] = 0.0
+    input_data[-1, :, 0] = 1.0
+    input_data[-1, :, 1] = 0.0
+    input_data[-1, :, 2] = 0.0
+
+    input_data[:, 0, 0] = 1.0
+    input_data[:, 0, 1] = 0.0
+    input_data[:, 0, 2] = 0.0
+    input_data[:, -1, 0] = 1.0
+    input_data[:, -1, 1] = 0.0
+    input_data[:, -1, 2] = 0.0
+    return input_data
+
+
+def tensor2numpy_img(input_tensor):
+    return input_tensor.permute(1, 2, 0).data.cpu().numpy()
+
+
+def log_train(results, b_idx):
+    # compute total loss (mean over steps and seqs)
+    train_obs_cost = results['obs_cost'].mean()
+    train_kl_abs_cost = results['kl_abs_state'].mean()
+    train_kl_obs_cost = results['kl_obs_state'].mean()
+    train_kl_mask_cost = results['kl_mask'].mean()
+
+    # log
+    # writer.add_scalar('train/full_cost', train_obs_cost + train_kl_abs_cost + train_kl_obs_cost + train_kl_mask_cost, global_step=b_idx)
+    # writer.add_scalar('train/obs_cost', train_obs_cost, global_step=b_idx)
+    # writer.add_scalar('train/kl_full_cost', train_kl_abs_cost + train_kl_obs_cost + train_kl_mask_cost, global_step=b_idx)
+    # writer.add_scalar('train/kl_abs_cost', train_kl_abs_cost, global_step=b_idx)
+    # writer.add_scalar('train/kl_obs_cost', train_kl_obs_cost, global_step=b_idx)
+    # writer.add_scalar('train/kl_mask_cost', train_kl_mask_cost, global_step=b_idx)
+    # writer.add_scalar('train/q_ent', results['p_ent'].mean(), global_step=b_idx)
+    # writer.add_scalar('train/p_ent', results['q_ent'].mean(), global_step=b_idx)
+    # writer.add_scalar('train/read_ratio', results['mask_data'].sum(1).mean(), global_step=b_idx)
+    # writer.add_scalar('train/beta', results['beta'], global_step=b_idx)
+    #print("mean>>>",results['mask_data'].sum(1),results['mask_data'].sum(1).mean)
+    log_str = '[%08d] train=elbo:%7.3f, obs_nll:%7.3f, ' \
+              'kl_full:%5.3f, kl_abs:%5.3f, kl_obs:%5.3f, kl_mask:%5.3f, ' \
+              'num_reads:%3.1f, beta: %3.3f, ' \
+              'p_ent: %3.2f, q_ent: %3.2f'
+    log_data = [b_idx,
+                - (train_obs_cost + train_kl_abs_cost + train_kl_obs_cost + train_kl_mask_cost),
+                train_obs_cost,
+                train_kl_abs_cost + train_kl_obs_cost + train_kl_mask_cost,
+                train_kl_abs_cost,
+                train_kl_obs_cost,
+                train_kl_mask_cost,
+                results['mask_data'].sum(1).mean(),
+                results['beta'],
+                results['p_ent'].mean(),
+                results['q_ent'].mean()]
+    log_loss=train_kl_abs_cost + train_kl_obs_cost + train_kl_mask_cost
+    mask_data=results['mask_data'].sum(1).mean()
+    return log_str, log_data,log_loss,mask_data
+
+
+def log_test(results, b_idx):
+    # compute total loss (mean over steps and seqs)
+    test_obs_cost = results['obs_cost'].mean()
+    test_kl_abs_cost = results['kl_abs_state'].mean()
+    test_kl_obs_cost = results['kl_obs_state'].mean()
+    test_kl_mask_cost = results['kl_mask'].mean()
+
+    # writer.add_scalar('valid/full_cost', test_obs_cost + test_kl_abs_cost + test_kl_obs_cost + test_kl_mask_cost, global_step=b_idx)
+    # writer.add_scalar('valid/obs_cost', test_obs_cost, global_step=b_idx)
+    # writer.add_scalar('valid/kl_full_cost', test_kl_abs_cost + test_kl_obs_cost + test_kl_mask_cost, global_step=b_idx)
+    # writer.add_scalar('valid/kl_abs_cost', test_kl_abs_cost, global_step=b_idx)
+    # writer.add_scalar('valid/kl_obs_cost', test_kl_obs_cost, b_idx)
+    # writer.add_scalar('valid/kl_mask_cost', test_kl_mask_cost, global_step=b_idx)
+    # writer.add_scalar('valid/read_ratio', results['mask_data'].sum(1).mean(), global_step=b_idx)
+    #print("mean>>>", results['mask_data'].sum(1), results['mask_data'].sum(1).mean)
+    log_str = '[%08d] valid=elbo:%7.3f, obs_nll:%7.3f, ' \
+              'kl_full:%5.3f, kl_abs:%5.3f, kl_obs:%5.3f, kl_mask:%5.3f, ' \
+              'num_reads:%3.1f'
+    log_data = [b_idx,
+                - (test_obs_cost + test_kl_abs_cost + test_kl_obs_cost + test_kl_mask_cost),
+                test_obs_cost,
+                test_kl_abs_cost + test_kl_obs_cost + test_kl_mask_cost,
+                test_kl_abs_cost,
+                test_kl_obs_cost,
+                test_kl_mask_cost,
+                results['mask_data'].sum(1).mean()]
+    log_loss = test_kl_abs_cost + test_kl_obs_cost + test_kl_mask_cost
+    mask_data = results['mask_data'].sum(1).mean()
+    return log_str, log_data,log_loss,mask_data
+
+def preprocess(image, bits=5):
+    bins = 2 ** bits
+    image = image * 255.0
+    if bits < 8:
+        image = torch.floor(image / 2 ** (8 - bits))
+    image = image / bins
+    image = image + image.new_empty(image.size()).uniform_() / bins
+    image = image - 0.5
+    return image * 2.0
+
+
+def postprocess(image, bits=5):
+    bins = 2 ** bits
+    image = image / 2.0 + 0.5
+    image = torch.floor(bins * image)
+    image = image * (255.0 / (bins - 1))
+    image = torch.clamp(image, min=0.0, max=255.0) / 255.0
+    return image
+
+def concat(*data_list):
+    return torch.cat(data_list, 1)
+
+
+def gumbel_sampling(log_alpha, temp, margin=1e-4):
+    noise = log_alpha.new_empty(log_alpha.size()).uniform_(margin, 1 - margin)
+    gumbel_sample = - torch.log(- torch.log(noise))
+    return torch.div(log_alpha + gumbel_sample, temp)
+
+
+def log_density_concrete(log_alpha, log_sample, temp):
+    exp_term = log_alpha - temp * log_sample
+    # print("exp_term",exp_term)
+    # print("torch.sum(exp_term, -1)",torch.sum(exp_term, -1))
+    # print("torch.logsumexp(exp_term, -1)",torch.logsumexp(exp_term, -1))
+    log_prob = torch.sum(exp_term, -1) - 2.0 * torch.logsumexp(exp_term, -1)
+    # print("log_prob",log_prob)
+    # exit()
+    return log_prob

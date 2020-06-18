@@ -1,0 +1,16 @@
+T = 1000000 #number of time points
+x = np.zeros(T)
+y= np.zeros(T)
+for  t in range(0,T):#from 1 to T-1
+    if t%500==0:
+        x[t] = 0.1 * np.random.randn(1) + 220
+        y[t] = 0.1 * np.random.randn(1) + 240
+        print('--', t, x[t], y[t])
+    else:
+        x[t] = 0.59 * x[t - 1] + 0.409 * y[t - 1]
+        y[t] = 0.399 * x[t - 1] + 0.6 * y[t - 1]
+
+Data = np.array((x.T,y.T))
+filepath='datarely1000000_2_500.npz'
+np.savez(os.path.abspath(filepath),data=Data)
+print(Data.T[:500,:])
